@@ -1,3 +1,6 @@
+#![feature(stmt_expr_attributes)]
+#![feature(let_chains)]
+
 pub mod server;
 pub mod arbiter;
 mod utils;
