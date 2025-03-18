@@ -58,6 +58,7 @@ pub struct ApiKey {
   pub allowed_events_from: Vec<String>,
   pub user_id: String,
   pub echo: bool,
+  pub proxy: bool
 }
 
 impl ApiKey {
@@ -68,6 +69,7 @@ impl ApiKey {
       allowed_events_from: self.allowed_events_from,
       user_id: self.user_id,
       echo: self.echo,
+      proxy: self.proxy
     }
   }
 }
@@ -79,6 +81,7 @@ pub struct ApiKeyWithKey {
   pub allowed_events_from: Vec<String>,
   pub user_id: String,
   pub echo: bool,
+  pub proxy: bool
 }
 
 impl Into<ApiKey> for ApiKeyWithKey {
@@ -88,6 +91,7 @@ impl Into<ApiKey> for ApiKeyWithKey {
       allowed_events_from: self.allowed_events_from,
       user_id: self.user_id,
       echo: self.echo,
+      proxy: self.proxy
     }
   }
 }
@@ -99,6 +103,7 @@ impl Into<ApiKeyWithKeyWithoutUID> for ApiKeyWithKey {
       allowed_events_to: self.allowed_events_to,
       allowed_events_from: self.allowed_events_from,
       echo: self.echo,
+      proxy: self.proxy
     }
   }
 }
@@ -109,4 +114,5 @@ pub struct ApiKeyWithKeyWithoutUID {
   pub allowed_events_to: Vec<String>,
   pub allowed_events_from: Vec<String>,
   pub echo: bool,
+  pub proxy: bool
 }

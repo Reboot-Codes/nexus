@@ -17,13 +17,13 @@ use url::Url;
 use crate::server::models::{
   CoreUserConfig,
   IPCMessageWithId,
-  Store,
+  NexusStore,
 };
 
 pub async fn arbiter_main(
   ipc_tx: UnboundedSender<IPCMessageWithId>,
   mut ipc_rx: UnboundedReceiver<IPCMessageWithId>,
-  store: Arc<Store>,
+  store: Arc<NexusStore>,
   user_config: Arc<CoreUserConfig>,
   cancellation_tokens: (CancellationToken, CancellationToken),
 ) {

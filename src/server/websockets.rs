@@ -6,9 +6,10 @@ use crate::server::models::{
   Client,
   ClientWithId,
   IPCMessageWithId,
+  NexusStore,
   Session,
-  Store,
 };
+use crate::server::DEAUTH_EVENT;
 use crate::utils::iso8601;
 use futures::{
   SinkExt,
@@ -44,12 +45,13 @@ use warp::filters::ws::{
 pub struct WsIn {
   pub kind: String,
   pub message: String,
+  pub api_key: Option<String>
 }
 
 pub async fn handle_ws_client(
   auth: (UserWithId, ApiKeyWithKey, ClientWithId, Session),
   ws: warp::ws::Ws,
-  store: Arc<Arc<Store>>,
+  store: Arc<Arc<NexusStore>>,
   to_clients_tx: Arc<Arc<Mutex<HashMap<String, UnboundedSender<IPCMessageWithId>>>>>,
   from_clients_tx: Arc<UnboundedSender<IPCMessageWithId>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -111,22 +113,66 @@ pub async fn handle_ws_client(
                 debug!("Client: {}, send message: {{ \"id\": \"{}\",  \"kind\": \"{}\", \"message\": \"{}\" }}...", ws_client.id.clone(), message_id.clone(), msg.kind.clone(), msg.message.clone());
 
                 let mut allowed_to_send = false;
+
+                // Check if this message can be sent by this API key.
                 for allowed_send_pattern in recv_api_key.allowed_events_from.clone() {
                   match Regex::new(&allowed_send_pattern) {
                     Ok(pattern) => {
                       if pattern.is_match(&msg.kind.clone()) {
-                        allowed_to_send = true;
-                        break;
+                        // Check if this message is being proxied via nexus::client...
+                        match msg.api_key.clone() {
+                          Some(proxied_key) => {
+                            // If so, make sure to run through the API key verification process for this message independantly.
+                            if recv_api_key.proxy {
+                              match recv_store.api_keys.lock().await.get(&proxied_key.clone()) {
+                                Some(proxied_api_key) => {
+                                  match recv_store.users.lock().await.get(&proxied_api_key.user_id.clone()) {
+                                    Some(_proxied_user) => {
+                                      for proxied_allowed_send_pattern in proxied_api_key.allowed_events_from.clone() {
+                                        match Regex::new(&proxied_allowed_send_pattern) {
+                                          Ok(proxied_pattern) => {
+                                            if proxied_pattern.is_match(&msg.kind.clone()) {
+                                              allowed_to_send = true;
+                                              break;
+                                            }
+                                          },
+                                          Err(e) => {
+                                            warn!("Allowed send from pattern: \"{}\" (for user: \"{}\"), is not valid, due to:\n{}", proxied_allowed_send_pattern.clone(), proxied_api_key.user_id.clone(), e);
+                                          }
+                                        }
+                                      }
+                                    },
+                                    None => {
+                                      // TODO: Proxied API key exists in store, but the associated User does not exist, refusing message.
+                                      // *This is a critical bug!*
+                                      // Theoretically, this shouldn't happen, but it could, and any cases should be refused and reported to the bug tracker.
+                                    }
+                                  }
+                                },
+                                None => {
+                                  // TODO: Proxied API key does not exist in the store, discard message.
+                                }
+                              }
+                            } else {
+                              // TODO: The *session's* api key is NOT permitted to proxy messages, and the message will be discarded.
+                            }
+                          },
+                          None => {
+                            // Or just send the message since no proxying is occuring.
+                            allowed_to_send = true;
+                            break;
+                          }
+                        }
                       }
                     },
                     Err(e) => {
-                      warn!("Allowed send from pattern: \"{}\" (for user: \"{}\"), is not valid, due to:\n{}", allowed_send_pattern.clone(), recv_user.id.clone(), e);
+                      warn!("Allowed \"send from\" pattern: \"{}\" (for user: \"{}\"), is not valid, due to:\n{}", allowed_send_pattern.clone(), recv_user.id.clone(), e);
                     }
                   }
                 }
 
                 if allowed_to_send {
-                  let generated_message = IPCMessageWithId { id: message_id.clone(), author: format!("ws:{}?client={}", recv_api_key.user_id.clone(), ws_client.id.clone()), kind: msg.kind.clone(), message: msg.message.clone() };
+                  let generated_message = IPCMessageWithId { id: message_id.clone(), author: format!("ws://{}?client={}", recv_api_key.user_id.clone(), ws_client.id.clone()), kind: msg.kind.clone(), message: msg.message.clone() };
 
                   recv_store.messages.lock().await.insert(message_id.clone(), generated_message.clone().into());
 
@@ -144,13 +190,13 @@ pub async fn handle_ws_client(
                 }
               },
               Err(e) => {
-                warn!("Client: {}, error reading message: \"{}\", due to:\n  {}", recv_client.id.clone(), message, e);
+                warn!("Client: {}, error reading message: \"{}\", due to:\n{}", recv_client.id.clone(), message, e);
                 // TODO: Send err?
               }
             };
           },
           Err(e) => {
-            error!("Error reading message on client: \"{}\", {}", ws_client.id.clone(), e);
+            error!("Error reading message on client: \"{}\", due to:\n{}", ws_client.id.clone(), e);
             // TODO: send error?
           }
         };
@@ -165,7 +211,7 @@ pub async fn handle_ws_client(
     let send_client = Arc::new(client.clone());
     let send_handle = tokio::task::spawn(async move {
       while let Some(msg) = to_client_rx.recv().await {
-        if msg.kind == Url::parse("clover://evtbuzz.clover.reboot-codes.com/clients/unauthorize")
+        if msg.kind == Url::parse(DEAUTH_EVENT)
         .unwrap()
         .query_pairs_mut()
         .append_pair("id", send_client.id.clone().as_str())

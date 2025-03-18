@@ -7,10 +7,11 @@ use crate::server::models::{
   ClientWithId,
   CoreUserConfig,
   IPCMessageWithId,
+  NexusStore,
   Session,
-  Store,
 };
 use crate::server::websockets::handle_ws_client;
+use crate::server::{AUTH_HEADER, DEAUTH_EVENT};
 use crate::utils::{
   gen_cid_with_check,
   gen_ipc_message,
@@ -49,6 +50,8 @@ use warp::{
   Filter,
   http::StatusCode,
 };
+
+use super::models::UserConfig;
 
 // example error response
 #[derive(Serialize, Debug)]
@@ -108,7 +111,7 @@ async fn handle_rejection(
 // middleware that looks for authorization header and validates it
 async fn ensure_authentication(
   path: String,
-  store: Arc<Arc<Store>>,
+  store: Arc<Arc<NexusStore>>,
   auth_header: Option<String>,
 ) -> Result<(UserWithId, ApiKeyWithKey, ClientWithId, Session), warp::reject::Rejection> {
   let client_id = gen_cid_with_check(&store).await;
@@ -261,8 +264,8 @@ pub struct ServerHealth {
 async fn handle_ipc_send(
   sender: Arc<mpsc::UnboundedSender<IPCMessageWithId>>,
   msg: IPCMessageWithId,
-  user_config: &Arc<CoreUserConfig>,
-  store: &Store,
+  user_config: &Arc<UserConfig>,
+  store: &NexusStore,
 ) {
   let users_mutex = &store.users.to_owned();
   let users = users_mutex.lock().await;
@@ -273,9 +276,9 @@ async fn handle_ipc_send(
   let keys_mutex = &store.api_keys.to_owned();
   let keys = keys_mutex.lock().await;
 
-  let api_key_conf = keys.get(&user_config.api_key.clone()).expect(&format!(
+  let api_key_conf = keys.get(&user_config.api_keys[0].key.clone()).expect(&format!(
     "ERROR: Core user api_key not found: {}",
-    user_config.api_key.clone()
+    user_config.api_keys[0].key.clone()
   ));
   let mut event_sent = false;
 
@@ -323,66 +326,25 @@ async fn handle_ipc_send(
 
 pub async fn nexus_listener(
   port: u16,
-  store: Arc<Store>,
-  mut arbiter_ipc: (
-    &CoreUserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
+  store: Arc<NexusStore>,
+  mut internal_client_senders: Vec<(
+    &UserConfig,
     UnboundedSender<IPCMessageWithId>,
-  ),
-  mut renderer_ipc: (
-    &CoreUserConfig,
+  )>,
+  internal_client_recivers: Vec<(
+    &UserConfig,
     UnboundedReceiver<IPCMessageWithId>,
-    UnboundedSender<IPCMessageWithId>,
-  ),
-  mut modman_ipc: (
-    &CoreUserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
-    UnboundedSender<IPCMessageWithId>,
-  ),
-  mut inference_engine_ipc: (
-    &CoreUserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
-    UnboundedSender<IPCMessageWithId>,
-  ),
-  mut appd_ipc: (
-    &CoreUserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
-    UnboundedSender<IPCMessageWithId>,
-  ),
-  mut warehouse_ipc: (
-    &CoreUserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
-    UnboundedSender<IPCMessageWithId>,
-  ),
+  )>,
   cancellation_tokens: (CancellationToken, CancellationToken),
-  nexus_user_config: Arc<CoreUserConfig>,
 ) {
   info!("Starting nexus on port: {}...", port);
   let clients_tx: Arc<Mutex<HashMap<String, UnboundedSender<IPCMessageWithId>>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
-  let arbiter_cfg = arbiter_ipc.0;
-  let arbiter_tx = arbiter_ipc.2;
-  let renderer_cfg = renderer_ipc.0;
-  let renderer_tx = renderer_ipc.2;
-  let modman_cfg = modman_ipc.0;
-  let modman_tx = modman_ipc.2;
-  let inference_engine_cfg = inference_engine_ipc.0;
-  let inference_engine_tx = inference_engine_ipc.2;
-  let appd_cfg = appd_ipc.0;
-  let appd_tx = appd_ipc.2;
-  let warehouse_cfg = warehouse_ipc.0;
-  let warehouse_tx = warehouse_ipc.2;
-  for client in vec![
-    (arbiter_cfg, arbiter_tx),
-    (renderer_cfg, renderer_tx),
-    (modman_cfg, modman_tx),
-    (inference_engine_cfg, inference_engine_tx),
-    (appd_cfg, appd_tx),
-    (warehouse_cfg, warehouse_tx),
-  ] {
+  // For everything connected via thread IPC, we still need a client or else everything freaks out.
+  for client in internal_client_senders {
     let client_obj = Client {
-      api_key: client.0.api_key.clone(),
+      api_key: client.0.api_keys[0].key.clone(),
       user_id: client.0.id.clone(),
       active: true,
     };
@@ -424,7 +386,7 @@ pub async fn nexus_listener(
   let ws_path = warp::path("ws")
     .and(warp::any().map(|| "/ws".to_string()))
     .and(store_filter.clone())
-    .and(warp::header::optional::<String>("Authorization"))
+    .and(warp::header::optional::<String>(AUTH_HEADER))
     .and_then(ensure_authentication)
     .and(warp::ws())
     .and(store_filter.clone())
@@ -454,6 +416,7 @@ pub async fn nexus_listener(
           }
         },
       )
+      // TODO: Handle bind errors!
       .expect("");
     server.await;
     info!("Server stopped.");
@@ -529,7 +492,7 @@ pub async fn nexus_listener(
                         None => {
                           error!("DANGER! Client: {}, had API key removed from store without closing connection on removal, THIS IS BAD; please report this! Closing connection...", client_id.clone());
 
-                          let kind = Url::parse("clover://nexus.clover.reboot-codes.com/clients/unauthorize")
+                          let kind = Url::parse(DEAUTH_EVENT)
                             .unwrap()
                             .query_pairs_mut()
                             .append_pair("id", &client_id.clone())
@@ -566,108 +529,32 @@ pub async fn nexus_listener(
     }
   });
 
-  // Internal IPC Handles
-  let from_warehouse_cfg = Arc::new(warehouse_cfg.clone());
-  let from_warehouse_store = Arc::new(store.clone());
-  let from_warehouse_tx = Arc::new(from_client_tx.clone());
-  let from_warehouse_token = cancellation_tokens.0.clone();
-  let from_warehouse_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_warehouse_token.cancelled() => {
-        debug!("from_warehouse exited");
-      },
-      _ = async move {
-        while let Some(msg) = warehouse_ipc.1.recv().await {
-          handle_ipc_send(from_warehouse_tx.clone(), msg, &from_warehouse_cfg.clone(), &from_warehouse_store.clone()).await;
-        }
-      } => {}
-    }
-  });
+  let mut internal_ipc_handles = vec![];
 
-  let from_arbiter_cfg = Arc::new(arbiter_cfg.clone());
-  let from_arbiter_store = Arc::new(store.clone());
-  let from_arbiter_tx = Arc::new(from_client_tx.clone());
-  let from_arbiter_token = cancellation_tokens.0.clone();
-  let from_arbiter_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_arbiter_token.cancelled() => {
-        debug!("from_arbiter exited");
-      },
-      _ = async move {
-        while let Some(msg) = arbiter_ipc.1.recv().await {
-          handle_ipc_send(from_arbiter_tx.clone(), msg, &from_arbiter_cfg.clone(), &from_arbiter_store.clone()).await;
-        }
-      } => {}
-    }
-  });
+  for client in internal_client_recivers {
+    // Internal IPC Handles
+    let client_cfg = Arc::new(client.0.clone());
+    let internal_ipc_store = Arc::new(store.clone());
+    let internal_ipc_tx = Arc::new(from_client_tx.clone());
+    let internal_ipc_token = cancellation_tokens.0.clone();
+    internal_ipc_handles.push(tokio::task::spawn(async move {
+      tokio::select! {
+        _ = internal_ipc_token.cancelled() => {
+          debug!("Internal IPC handle for client: \"{}\", exited!", client_cfg.id.clone());
+        },
+        _ = async move {
+          while let Some(msg) = client.1.recv().await {
+            handle_ipc_send(internal_ipc_tx.clone(), msg, &client_cfg.clone(), &internal_ipc_store.clone()).await;
+          }
+        } => {}
+      }
+    }));
+  }
 
-  let from_renderer_cfg = Arc::new(renderer_cfg.clone());
-  let from_renderer_store = Arc::new(store.clone());
-  let from_renderer_tx = Arc::new(from_client_tx.clone());
-  let from_renderer_token = cancellation_tokens.0.clone();
-  let from_renderer_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_renderer_token.cancelled() => {
-        debug!("from_renderer exited");
-      },
-      _ = async move {
-        while let Some(msg) = renderer_ipc.1.recv().await {
-          handle_ipc_send(from_renderer_tx.clone(), msg, &from_renderer_cfg.clone(), &from_renderer_store.clone()).await;
-        }
-      } => {}
-    }
-  });
-
-  let from_modman_cfg = Arc::new(modman_cfg.clone());
-  let from_modman_store = Arc::new(store.clone());
-  let from_modman_tx = Arc::new(from_client_tx.clone());
-  let from_modman_token = cancellation_tokens.0.clone();
-  let from_modman_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_modman_token.cancelled() => {
-        debug!("from_modman exited");
-      },
-      _ = async move {
-        while let Some(msg) = modman_ipc.1.recv().await {
-          handle_ipc_send(from_modman_tx.clone(), msg, &from_modman_cfg.clone(), &from_modman_store.clone()).await;
-        }
-      } => {}
-    }
-  });
-
-  let from_inference_engine_cfg = Arc::new(inference_engine_cfg.clone());
-  let from_inference_engine_store = Arc::new(store.clone());
-  let from_inference_engine_tx = Arc::new(from_client_tx.clone());
-  let from_inference_engine_token = cancellation_tokens.0.clone();
-  let from_inference_engine_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_inference_engine_token.cancelled() => {
-        debug!("from_reference_engine exited");
-      },
-      _ = async move {
-        while let Some(msg) = inference_engine_ipc.1.recv().await {
-          handle_ipc_send(from_inference_engine_tx.clone(), msg, &from_inference_engine_cfg.clone(), &from_inference_engine_store.clone()).await;
-        }
-      } => {}
-    }
-  });
-
-  let from_appd_cfg = Arc::new(appd_cfg.clone());
-  let from_appd_store = Arc::new(store.clone());
-  let from_appd_tx = Arc::new(from_client_tx.clone());
-  let from_appd_token = cancellation_tokens.0.clone();
-  let from_appd_handle = tokio::task::spawn(async move {
-    tokio::select! {
-      _ = from_appd_token.cancelled() => {
-        debug!("from_appd exited");
-      },
-      _ = async move {
-        while let Some(msg) = appd_ipc.1.recv().await {
-          handle_ipc_send(from_appd_tx.clone(), msg, &from_appd_cfg.clone(), &from_appd_store.clone()).await;
-        }
-      } => {}
-    }
-  });
+  let mut handles = Vec::new();
+  handles.push(http_handle);
+  handles.push(ipc_dispatch_handle);
+  handles.append(&mut internal_ipc_handles);
 
   let cleanup_token = cancellation_tokens.0.clone();
   tokio::select! {
@@ -681,16 +568,8 @@ pub async fn nexus_listener(
     }
   }
 
-  tokio::select! {_ = futures::future::join_all(vec![
-    from_warehouse_handle,
-    http_handle,
-    ipc_dispatch_handle,
-    from_arbiter_handle,
-    from_renderer_handle,
-    from_modman_handle,
-    from_inference_engine_handle,
-    from_appd_handle
-  ]) => {
-    info!("nexus has stopped!");
+  tokio::select! {
+    _ = futures::future::join_all(handles) => {
+    info!("Nexus server has stopped!");
   }}
 }

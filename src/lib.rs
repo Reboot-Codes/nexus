@@ -2,7 +2,9 @@
 #![feature(let_chains)]
 
 pub mod arbiter;
+pub mod client;
 pub mod server;
+pub mod user;
 mod utils;
 
 pub fn add(left: u64, right: u64) -> u64 {

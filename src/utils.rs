@@ -1,7 +1,7 @@
 use crate::server::models::{
   CoreUserConfig,
   IPCMessageWithId,
-  Store,
+  NexusStore,
 };
 use api_key::types::{
   ApiKeyResults,
@@ -62,7 +62,7 @@ pub fn gen_api_key() -> String {
 }
 
 /// Generates a new API key after checking that it is not currently in the Store.
-pub async fn gen_api_key_with_check(store: &Store) -> String {
+pub async fn gen_api_key_with_check(store: &NexusStore) -> String {
   loop {
     let api_key = gen_api_key();
     match store.api_keys.lock().await.get(&api_key.clone()) {
@@ -75,7 +75,7 @@ pub async fn gen_api_key_with_check(store: &Store) -> String {
 }
 
 /// Generates a new UID after checking that it is currently not in the Store.
-pub async fn gen_uid_with_check(store: &Store) -> String {
+pub async fn gen_uid_with_check(store: &NexusStore) -> String {
   loop {
     let uid = Uuid::new_v4().to_string();
     match store.users.lock().await.get(&uid.clone()) {
@@ -87,7 +87,7 @@ pub async fn gen_uid_with_check(store: &Store) -> String {
   }
 }
 
-pub async fn gen_message_id_with_check(store: &Store) -> String {
+pub async fn gen_message_id_with_check(store: &NexusStore) -> String {
   loop {
     let message_id = Uuid::new_v4().to_string();
     match store.messages.lock().await.get(&message_id.clone()) {
@@ -100,7 +100,7 @@ pub async fn gen_message_id_with_check(store: &Store) -> String {
 }
 
 pub async fn gen_ipc_message(
-  store: &Store,
+  store: &NexusStore,
   user_config: &CoreUserConfig,
   kind: String,
   message: String,
@@ -114,7 +114,7 @@ pub async fn gen_ipc_message(
   }
 }
 
-pub async fn gen_cid_with_check(store: &Store) -> String {
+pub async fn gen_cid_with_check(store: &NexusStore) -> String {
   loop {
     let client_id = Uuid::new_v4().to_string();
     match store.clients.lock().await.get(&client_id.clone()) {
@@ -127,7 +127,7 @@ pub async fn gen_cid_with_check(store: &Store) -> String {
 }
 
 pub async fn send_ipc_message(
-  store: &Store,
+  store: &NexusStore,
   user_config: &CoreUserConfig,
   ipc_tx: Arc<UnboundedSender<IPCMessageWithId>>,
   kind: String,
