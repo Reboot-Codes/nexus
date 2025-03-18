@@ -5,7 +5,6 @@ use crate::arbiter::models::{
 use crate::server::models::{
   Client,
   ClientWithId,
-  CoreUserConfig,
   IPCMessageWithId,
   NexusStore,
   Session,
@@ -13,9 +12,7 @@ use crate::server::models::{
 use crate::server::websockets::handle_ws_client;
 use crate::server::{AUTH_HEADER, DEAUTH_EVENT};
 use crate::utils::{
-  gen_cid_with_check,
-  gen_ipc_message,
-  iso8601,
+  gen_cid_with_check, gen_message_id_with_check, iso8601
 };
 use log::{
   debug,
@@ -50,13 +47,19 @@ use warp::{
   Filter,
   http::StatusCode,
 };
-
 use super::models::UserConfig;
 
 // example error response
 #[derive(Serialize, Debug)]
 struct ApiErrorResult {
   detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IPCWithKey {
+  kind: String,
+  message: String,
+  api_key: String
 }
 
 // errors thrown by handlers and custom filters,
@@ -163,7 +166,7 @@ async fn ensure_authentication(
           .get(&api_key_str.clone())
           .unwrap()
           .clone()
-          .to_api_key_with_key(api_key_str.clone());
+          .to_api_key_with_key(&api_key_str.clone());
 
         let user_id = api_key.clone().user_id;
         debug!("Registering as client: {}", client_id.clone());
@@ -261,80 +264,14 @@ pub struct ServerHealth {
   up_since: String,
 }
 
-async fn handle_ipc_send(
-  sender: Arc<mpsc::UnboundedSender<IPCMessageWithId>>,
-  msg: IPCMessageWithId,
-  user_config: &Arc<UserConfig>,
-  store: &NexusStore,
-) {
-  let users_mutex = &store.users.to_owned();
-  let users = users_mutex.lock().await;
-  let user_conf = users.get(&user_config.id.clone()).expect(&format!(
-    "ERROR: Core user not found: {}",
-    user_config.id.clone()
-  ));
-  let keys_mutex = &store.api_keys.to_owned();
-  let keys = keys_mutex.lock().await;
-
-  let api_key_conf = keys.get(&user_config.api_keys[0].key.clone()).expect(&format!(
-    "ERROR: Core user api_key not found: {}",
-    user_config.api_keys[0].key.clone()
-  ));
-  let mut event_sent = false;
-
-  for allowed_event_regex in api_key_conf.allowed_events_from.clone() {
-    match Regex::new(&allowed_event_regex.clone()) {
-      Ok(regex) => {
-        if regex.is_match(&msg.kind.clone()) {
-          match sender.send(msg.clone()) {
-            Ok(_) => {
-              event_sent = true;
-            }
-            Err(e) => {
-              error!(
-                "Core user: {}, IPC channel: {}, Failed to send message: {{ \"author\": \"{}\", \"kind\": \"{}\", \"message\": \"{}\" }}, due to:\n{}",
-                user_config.id.clone(),
-                user_conf.user_type.clone(),
-                msg.author.clone(),
-                msg.kind.clone(),
-                msg.message.clone(),
-                e
-              );
-            }
-          };
-        }
-      }
-      Err(e) => {
-        error!(
-          "Core user: {}, api key's \"allowed events from\", regex: {}, is invalid! Regex Error: {}",
-          user_config.id.clone(),
-          allowed_event_regex.clone(),
-          e
-        );
-      }
-    }
-  }
-
-  if !event_sent {
-    debug!(
-      "Core user: {}, event \"{}\" not sent.",
-      user_config.id,
-      msg.kind.clone()
-    );
-  }
-}
-
 pub async fn nexus_listener(
   port: u16,
   store: Arc<NexusStore>,
-  mut internal_client_senders: Vec<(
+  internal_client_senders: Vec<(
     &UserConfig,
     UnboundedSender<IPCMessageWithId>,
   )>,
-  internal_client_recivers: Vec<(
-    &UserConfig,
-    UnboundedReceiver<IPCMessageWithId>,
-  )>,
+  internal_client_recivers: Vec<UnboundedReceiver<IPCWithKey>>,
   cancellation_tokens: (CancellationToken, CancellationToken),
 ) {
   info!("Starting nexus on port: {}...", port);
@@ -424,7 +361,6 @@ pub async fn nexus_listener(
 
   let ipc_dispatch_store = Arc::new(store.clone());
   let ipc_dispatch_clients_tx = Arc::new(clients_tx.clone());
-  let ipc_dispatch_user_config = Arc::new(nexus_user_config.clone());
   let ipc_dispatch_token = cancellation_tokens.0.clone();
   let ipc_dispatch_handle = tokio::task::spawn(async move {
     tokio::select! {
@@ -452,7 +388,7 @@ pub async fn nexus_listener(
                             match Regex::new(&allowed_event_regex) {
                               Ok(regex) => {
                                 // TODO: Generate an internal CID in CoreUserConfig!
-                                if regex.is_match(&allowed_event_regex) { // && !(message.author.clone().split("?client=").collect::<Vec<_>>()[1] == *client_id.clone()) {
+                                if regex.is_match(&message.kind.clone()) { // && !(message.author.clone().split("?client=").collect::<Vec<_>>()[1] == *client_id.clone()) {
                                   debug!("Sending event: \"{}\", to client: {}...", message.kind.clone(), client_id.clone());
                                   match client_sender.send(message.clone()) {
                                     Ok(_) => {
@@ -464,6 +400,8 @@ pub async fn nexus_listener(
                                   };
 
                                   break;
+                                } else {
+                                  // TODO: Not permitted to send message
                                 }
                               },
                               Err(e) => {
@@ -499,12 +437,14 @@ pub async fn nexus_listener(
                             .finish()
                             .to_string();
 
-                          let generated_message = gen_ipc_message(
-                            &ipc_dispatch_store.clone(),
-                            &ipc_dispatch_user_config.clone(),
+                          let generated_message = IPCMessageWithId {
+                            // TODO: fix this!!!!!
+                            author: "ipc://com.reboot-codes.nexus.listener".to_string(),
                             kind,
-                            "api key removed from store".to_string()
-                          ).await;
+                            message: "api key removed from store".to_string(),
+                            id: gen_message_id_with_check(&ipc_dispatch_store).await
+                          };
+
                           ipc_dispatch_store.messages.lock().await.insert(generated_message.id.clone(), generated_message.clone().into());
 
                           let _ = client_sender.send(generated_message.clone());
@@ -531,20 +471,67 @@ pub async fn nexus_listener(
 
   let mut internal_ipc_handles = vec![];
 
-  for client in internal_client_recivers {
+  for mut client in internal_client_recivers {
     // Internal IPC Handles
-    let client_cfg = Arc::new(client.0.clone());
     let internal_ipc_store = Arc::new(store.clone());
     let internal_ipc_tx = Arc::new(from_client_tx.clone());
     let internal_ipc_token = cancellation_tokens.0.clone();
     internal_ipc_handles.push(tokio::task::spawn(async move {
       tokio::select! {
         _ = internal_ipc_token.cancelled() => {
-          debug!("Internal IPC handle for client: \"{}\", exited!", client_cfg.id.clone());
+          debug!("Internal IPC Handle Exited!");
         },
         _ = async move {
-          while let Some(msg) = client.1.recv().await {
-            handle_ipc_send(internal_ipc_tx.clone(), msg, &client_cfg.clone(), &internal_ipc_store.clone()).await;
+          while let Some(msg) = client.recv().await {
+            match internal_ipc_store.api_keys.lock().await.get(&msg.api_key.to_string()) {
+              Some(api_key) => {
+                match internal_ipc_store.users.lock().await.get(&api_key.user_id) {
+                  Some(_user) => {
+                    for allowed_event_regex in api_key.allowed_events_from.clone() {
+                        match Regex::new(&allowed_event_regex.clone()) {
+                          Ok(regex) => {
+                            if regex.is_match(&msg.kind.clone()) {
+                              let author = format!("ipc://{}", api_key.user_id.clone());
+                              match internal_ipc_tx.send(IPCMessageWithId {
+                                author: author.clone(),
+                                kind: msg.kind.clone(),
+                                message: msg.message.clone(),
+                                id: gen_message_id_with_check(&internal_ipc_store).await
+                              }) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                  error!(
+                                    "IPC user: {}, Failed to send message: {{ \"author\": \"{}\", \"kind\": \"{}\", \"message\": \"{}\" }}, due to:\n{}",
+                                    api_key.user_id.clone(),
+                                    author.clone(),
+                                    msg.kind.clone(),
+                                    msg.message.clone(),
+                                    e
+                                  );
+                                }
+                              };
+                            }
+                          }
+                          Err(e) => {
+                            error!(
+                              "IPC user: {}, api key's \"allowed events from\", regex: {}, is invalid! Regex Error: {}",
+                              api_key.user_id.clone(),
+                              allowed_event_regex.clone(),
+                              e
+                            );
+                          }
+                        }
+                      }
+                  },
+                  None => {
+                    // TODO:
+                  }
+                }
+              },
+              None => {
+                // TODO:
+              }
+            }
           }
         } => {}
       }

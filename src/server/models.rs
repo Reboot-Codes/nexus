@@ -2,7 +2,7 @@ use crate::{
   arbiter::models::{
     ApiKey,
     ApiKeyWithKeyWithoutUID,
-    User,
+    User, UserWithId,
   },
   utils::{
     gen_api_key_with_check,
@@ -86,10 +86,17 @@ pub struct CoreUserConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserConfig {
+pub struct UserConfigWithId {
   pub user_type: String,
   pub pretty_name: String,
   pub id: String,
+  pub api_keys: Vec<ApiKeyWithKeyWithoutUID>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserConfig {
+  pub user_type: String,
+  pub pretty_name: String,
   pub api_keys: Vec<ApiKeyWithKeyWithoutUID>,
 }
 
@@ -107,7 +114,7 @@ impl NexusStore {
   const MASTER_USER_TYPE: &str = "com.reboot-codes.nexus.master";
 
   /// Create a new store with a set master user.
-  pub async fn new(master_user_pretty_name: &String) -> (NexusStore, UserConfig) {
+  pub async fn new(master_user_pretty_name: &String) -> (NexusStore, UserWithId) {
     let mut ret = NexusStore {
       users: Arc::new(Mutex::new(HashMap::new())),
       api_keys: Arc::new(Mutex::new(HashMap::new())),
@@ -115,43 +122,78 @@ impl NexusStore {
       messages: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let master_user_config = ret.add_master_user(&master_user_pretty_name).await;
+    let master_user = ret.add_master_user(&master_user_pretty_name).await;
 
-    (ret, master_user_config)
+    (ret, master_user)
   }
 
-  pub async fn add_user(&mut self, user_config: UserConfig) {
-    let mut key_ids: Vec<String> = vec![];
-    for key_config in user_config.api_keys.iter() {
-      key_ids.push(key_config.key.clone());
-    }
+  pub async fn add_user(&mut self, user_config: UserConfig, parent: Option<String>) -> Result<UserWithId, anyhow::Error> {
+    let mut parent_id = None;
+    let mut error = None;
 
-    self.users.lock().await.insert(
-      user_config.id.clone(),
-      User {
-        pretty_name: user_config.pretty_name,
-        user_type: user_config.user_type,
-        api_keys: key_ids,
-        sessions: Arc::new(Mutex::new(HashMap::new())),
+    match parent.clone() {
+      Some(target_parent_id) => {
+        match self.users.lock().await.get(&target_parent_id) {
+          Some(_parent) => {
+            parent_id = parent.clone();
+          },
+          None => {
+            error = Some(anyhow::anyhow!("Parent ID does not exist in store!"));
+          }
+        }
       },
-    );
+      None => {}
+    }
 
-    for key_config in user_config.api_keys.iter() {
-      self.api_keys.lock().await.insert(
-        key_config.key.clone(),
-        ApiKey {
-          allowed_events_to: key_config.allowed_events_to.clone(),
-          allowed_events_from: key_config.allowed_events_from.clone(),
-          user_id: user_config.id.clone(),
-          echo: key_config.echo.clone(),
-        },
-      );
+    match error {
+      Some(e) => { Err(e) },
+      None => {
+        let mut key_ids: Vec<String> = vec![];
+        for key_config in user_config.api_keys.iter() {
+          key_ids.push(key_config.key.clone());
+        }
+        let id = gen_uid_with_check(self).await;
+
+        self.users.lock().await.insert(
+          id.clone(),
+          User {
+            pretty_name: user_config.pretty_name.clone(),
+            user_type: user_config.user_type.clone(),
+            api_keys: key_ids.clone(),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            parent_id: parent.clone(),
+            children: Vec::new()
+          },
+        );
+
+        for key_config in user_config.api_keys.iter() {
+          self.api_keys.lock().await.insert(
+            key_config.key.clone(),
+            ApiKey {
+              allowed_events_to: key_config.allowed_events_to.clone(),
+              allowed_events_from: key_config.allowed_events_from.clone(),
+              user_id: id.clone(),
+              echo: key_config.echo,
+              proxy: key_config.proxy
+            },
+          );
+        }
+
+        Ok(UserWithId {
+          pretty_name: user_config.pretty_name,
+          user_type: user_config.user_type,
+          api_keys: key_ids,
+          sessions: Arc::new(Mutex::new(HashMap::new())),
+          parent_id: parent,
+          children: Vec::new(),
+          id: id.clone()
+        })
+      }
     }
   }
 
-  pub async fn add_master_user(&mut self, pretty_name: &String) -> UserConfig {
+  pub async fn add_master_user(&mut self, pretty_name: &String) -> UserWithId {
     let ret = UserConfig {
-      id: gen_uid_with_check(self).await,
       pretty_name: pretty_name.clone(),
       user_type: NexusStore::MASTER_USER_TYPE.to_string(),
       api_keys: vec![ApiKeyWithKeyWithoutUID {
@@ -159,11 +201,10 @@ impl NexusStore {
         allowed_events_from: vec![".*".to_string()],
         key: gen_api_key_with_check(self).await,
         echo: true,
+        proxy: true
       }],
     };
 
-    self.add_user(ret.clone()).await;
-
-    ret
+    self.add_user(ret.clone(), None).await.unwrap()
   }
 }

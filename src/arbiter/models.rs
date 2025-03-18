@@ -18,6 +18,8 @@ pub struct User {
   pub sessions: Arc<Mutex<HashMap<String, Session>>>,
   pub user_type: String,
   pub pretty_name: String,
+  pub parent_id: Option<String>,
+  pub children: Vec<String>,
 }
 
 impl User {
@@ -28,6 +30,8 @@ impl User {
       sessions: self.sessions,
       user_type: self.user_type,
       pretty_name: self.pretty_name,
+      parent_id: self.parent_id,
+      children: self.children
     }
   }
 }
@@ -39,6 +43,8 @@ pub struct UserWithId {
   pub sessions: Arc<Mutex<HashMap<String, Session>>>,
   pub user_type: String,
   pub pretty_name: String,
+  pub parent_id: Option<String>,
+  pub children: Vec<String>,
 }
 
 impl Into<User> for UserWithId {
@@ -48,6 +54,8 @@ impl Into<User> for UserWithId {
       sessions: self.sessions,
       user_type: self.user_type,
       pretty_name: self.pretty_name,
+      parent_id: self.parent_id,
+      children: self.children
     }
   }
 }
@@ -62,12 +70,12 @@ pub struct ApiKey {
 }
 
 impl ApiKey {
-  pub fn to_api_key_with_key(self, key: String) -> ApiKeyWithKey {
+  pub fn to_api_key_with_key(&self, key: &String) -> ApiKeyWithKey {
     ApiKeyWithKey {
-      key,
-      allowed_events_to: self.allowed_events_to,
-      allowed_events_from: self.allowed_events_from,
-      user_id: self.user_id,
+      key: key.clone(),
+      allowed_events_to: self.allowed_events_to.clone(),
+      allowed_events_from: self.allowed_events_from.clone(),
+      user_id: self.user_id.clone(),
       echo: self.echo,
       proxy: self.proxy
     }

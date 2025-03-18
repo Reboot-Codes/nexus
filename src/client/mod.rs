@@ -1,7 +1,4 @@
-use crate::server::models::{
-  IPCMessageWithId,
-  UserConfig,
-};
+use crate::{arbiter::models::ApiKey, server::{models::IPCMessageWithId, websockets::WsIn, AUTH_HEADER}, user::NexusUser};
 use fastwebsockets::{
   FragmentCollector,
   Frame,
@@ -21,22 +18,38 @@ use log::info;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpStream;
+use std::collections::HashMap;
+use tokio::{net::TcpStream, sync::broadcast};
 use tokio::{
-  sync::{
-    Mutex,
-    mpsc::{
-      UnboundedReceiver,
-      UnboundedSender,
-      unbounded_channel,
-    },
-  },
+  sync::Mutex,
   task::{
     JoinHandle,
     spawn,
   },
 };
 use tokio_util::sync::CancellationToken;
+use log::error;
+
+#[derive(Debug, Clone)]
+pub struct ClientStatus {
+  pub connected: bool
+}
+
+impl ClientStatus {
+  pub fn new(connected: bool) -> Self {
+    ClientStatus {
+      connected
+    }
+  }
+
+  pub fn set(&mut self, connected: bool) {
+    self.connected = connected
+  }
+
+  pub fn get(&self) -> bool {
+    self.connected
+  }
+}
 
 /// Use when connecting a program to nexus *remotely*. Use the nexus::server::listener's
 /// nexus_listener() function to run an embedded server.
@@ -45,11 +58,14 @@ pub struct NexusClient {
   url: String,
   // TODO: Make optional as we can connect via OS socket as well.
   port: u16,
-  config: UserConfig,
-  connected: bool,
+  api_key: String,
+  status: Arc<Mutex<ClientStatus>>,
   keep_trying: bool,
-  to_server: Option<UnboundedSender<IPCMessageWithId>>,
-  from_server: Option<UnboundedReceiver<IPCMessageWithId>>,
+  to_server_tx: broadcast::Sender<WsIn>,
+  from_server: broadcast::Sender<IPCMessageWithId>,
+  handles: Vec<JoinHandle<()>>,
+  api_keys: Arc<Mutex<HashMap<String, ApiKey>>>,
+  cancellation_token: CancellationToken
   // TODO: Add user registry to see if a user is connected via this client to route back instead of sending to server.
 }
 
@@ -75,18 +91,24 @@ impl NexusClient {
     secure: bool,
     url: &String,
     port: &u16,
-    config: &UserConfig,
+    api_key: &String,
     keep_trying: bool,
   ) -> Self {
+    let (from_server, _) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
+    let (to_server_tx, _) = broadcast::channel::<WsIn>(usize::MAX / 2);
+
     NexusClient {
       secure,
       url: url.clone(),
       port: port.clone(),
-      config: config.clone(),
-      connected: false,
+      api_key: api_key.clone(),
+      status: Arc::new(Mutex::new(ClientStatus::new(false))),
       keep_trying,
-      to_server: None,
-      from_server: None
+      to_server_tx,
+      from_server,
+      handles: Vec::new(),
+      api_keys: Arc::new(Mutex::new(HashMap::new())),
+      cancellation_token: CancellationToken::new()
     }
   }
 
@@ -96,35 +118,33 @@ impl NexusClient {
   pub async fn connect_to_ws(
     &mut self,
   ) -> Result<
-    (
-      JoinHandle<()>,
-      (CancellationToken, CancellationToken)
-    ),
+    JoinHandle<()>,
     anyhow::Error,
   > {
     let mut keep_trying = true;
-    let cancellation_tokens = (CancellationToken::new(), CancellationToken::new());
     let mut ws_opt = None;
     let mut error: Option<anyhow::Error> = None;
+    let host = format!(
+      "{}:{}",
+      self.url.clone(),
+      self.port.clone().to_string()
+    );
+    let uri = format!(
+      "{}://{}:{}/ws",
+      (if self.secure { "https" } else { "http" }),
+      self.url.clone(),
+      self.port.clone().to_string()
+    );
 
     while keep_trying {
-      match TcpStream::connect(format!(
-        "{}:{}",
-        self.url.clone(),
-        self.port.clone().to_string()
-      )).await {
+      match TcpStream::connect(host.clone()).await {
         Ok(stream) => {
           match Request::builder()
             .method("GET")
-            .uri(format!(
-              "{}://{}:{}/",
-              (if self.secure { "https" } else { "http" }),
-              self.url.clone(),
-              self.port.clone().to_string()
-            ))
+            .uri(uri.clone())
             .header(
               "Host",
-              format!("{}:{}", self.url.clone(), self.port.clone().to_string()),
+              host.clone(),
             )
             .header(UPGRADE, "websocket")
             .header(CONNECTION, "upgrade")
@@ -132,7 +152,7 @@ impl NexusClient {
               "Sec-WebSocket-Key",
               fastwebsockets::handshake::generate_key(),
             )
-            // TODO: Add API key!
+            .header(AUTH_HEADER, self.api_key.clone())
             .header("Sec-WebSocket-Version", "13")
             .body(Empty::<Bytes>::new())
           {
@@ -141,7 +161,9 @@ impl NexusClient {
                 ws_opt = Some(the_socket);
               }
               Err(e) => {
+                error!("Failed to perform WebSocket Handshake with \"{}\":\n{}", uri.clone(), e);
                 if self.keep_trying {
+                  error!("Retrying WebSocket Handshake with \"{}\"...", uri.clone());
                   tokio::time::sleep(Duration::from_secs(1)).await;
                 } else {
                   error = Some(e.into());
@@ -150,7 +172,9 @@ impl NexusClient {
               }
             },
             Err(e) => {
+              error!("Failed to send WebSocket Upgrade request to \"{}\":\n{}", uri.clone(), e);
               if self.keep_trying {
+                info!("Retrying WebSocket Upgrade request for \"{}\"...", uri.clone());
                 tokio::time::sleep(Duration::from_secs(1)).await;
               } else {
                 error = Some(e.into());
@@ -160,7 +184,9 @@ impl NexusClient {
           }
         }
         Err(e) => {
+          error!("Failed to open TCP connection to \"{}\":\n{}", host.clone(), e);
           if self.keep_trying {
+            info!("Retrying TCP connection to \"{}\"...", host.clone());
             tokio::time::sleep(Duration::from_secs(1)).await;
           } else {
             error = Some(e.into());
@@ -172,12 +198,11 @@ impl NexusClient {
 
     match ws_opt {
       Some(ws) => {
-        self.connected = true;
+        self.status.lock().await.set(true);
 
         let (mut reader, og_writer) = ws.split(tokio::io::split);
         let writer = Arc::new(Mutex::new(AddSend(og_writer)));
-        let (handle_from_tx, handle_from_rx) = unbounded_channel::<IPCMessageWithId>();
-        let (handle_to_tx, mut handle_to_rx) = unbounded_channel::<IPCMessageWithId>();
+        let (from_tx, _) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
 
         let senders_writer = writer.clone();
         let mut sender = move |frame| {
@@ -185,12 +210,13 @@ impl NexusClient {
           async move { senders_writer_two.lock().await.0.write_frame(frame).await }
         };
 
-        let handle_tokens = cancellation_tokens.clone();
+        let handle_from_tx = from_tx.clone();
+        let handle_token = self.cancellation_token.clone();
+        let mut handle_to_rx = self.to_server_tx.subscribe();
         let handle = spawn(async move {
-          let recv_tokens = Arc::new(handle_tokens.clone());
+          let recv_token = Arc::new(handle_token.clone());
           let recv_handle = spawn(async move {
-            recv_tokens
-              .0
+            recv_token
               .run_until_cancelled(async move {
                 // TODO: Use FragmentCollector!
                 while let Ok(mut message) = reader.read_frame(&mut sender).await {
@@ -221,13 +247,12 @@ impl NexusClient {
               .await;
           });
 
-          let send_tokens = Arc::new(handle_tokens.clone());
+          let send_token = Arc::new(handle_token.clone());
           let send_handle = spawn(async move {
             let sender_writer = writer.clone();
-            send_tokens
-              .0
+            send_token
               .run_until_cancelled(async move {
-                while let Some(message) = handle_to_rx.recv().await {
+                while let Ok(message) = handle_to_rx.recv().await {
                   match sender_writer
                     .lock()
                     .await
@@ -237,7 +262,9 @@ impl NexusClient {
                     ))
                     .await
                   {
-                    Ok(_) => {}
+                    Ok(_) => {
+                      // TODO:
+                    }
                     Err(e) => {
                       // TODO:
                     }
@@ -269,18 +296,43 @@ impl NexusClient {
             send_handle
           ]) => {
             info!("WS threads have exited!");
-            handle_tokens.1.cancel();
           }}
         });
 
-        self.to_server = Some(handle_to_tx);
-        self.from_server = Some(handle_from_rx);
-
-        Ok((handle, cancellation_tokens))
+        Ok(handle)
       }
       None => {
         return Err(error.unwrap());
       }
     }
   }
+
+  pub async fn new_user(&self, api_key_str: &String) -> Result<NexusUser, anyhow::Error> {
+    if self.status.lock().await.get() {
+      match self.api_keys.lock().await.get(&api_key_str.clone()) {
+        Some(api_key) => {
+          let status = self.status.clone();
+          let cancellation_token = self.cancellation_token.clone();
+          let to_server = self.to_server_tx.clone();
+          let from_server_tx = self.from_server.clone();
+
+          Ok(NexusUser::new(
+            false,
+            status,
+            cancellation_token,
+            api_key.to_api_key_with_key(&api_key_str.clone()),
+            to_server,
+            from_server_tx
+          ))
+        },
+        None => {
+          Err(anyhow::anyhow!("Client's API key does not exist in the mini-store... sure ya have the right one?"))
+        }
+      }
+    } else {
+      Err(anyhow::anyhow!("Client is not connected yet!"))
+    }
+  }
+
+  // TODO: Get API keys that this proxy user registered.
 }

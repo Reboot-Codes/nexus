@@ -99,21 +99,6 @@ pub async fn gen_message_id_with_check(store: &NexusStore) -> String {
   }
 }
 
-pub async fn gen_ipc_message(
-  store: &NexusStore,
-  user_config: &CoreUserConfig,
-  kind: String,
-  message: String,
-) -> IPCMessageWithId {
-  let message_id = gen_message_id_with_check(&store.clone()).await;
-  IPCMessageWithId {
-    id: message_id.clone(),
-    author: user_config.id.to_string(),
-    kind,
-    message,
-  }
-}
-
 pub async fn gen_cid_with_check(store: &NexusStore) -> String {
   loop {
     let client_id = Uuid::new_v4().to_string();
