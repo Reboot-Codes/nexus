@@ -111,16 +111,6 @@ pub async fn gen_cid_with_check(store: &NexusStore) -> String {
   }
 }
 
-pub async fn send_ipc_message(
-  store: &NexusStore,
-  user_config: &CoreUserConfig,
-  ipc_tx: Arc<UnboundedSender<IPCMessageWithId>>,
-  kind: String,
-  message: String,
-) -> Result<(), tokio::sync::mpsc::error::SendError<IPCMessageWithId>> {
-  ipc_tx.send(gen_ipc_message(store, user_config, kind, message).await)
-}
-
 pub async fn read_file(path: OsPath) -> Result<String, SimpleError> {
   let mut err = None;
   let mut ret = None;
