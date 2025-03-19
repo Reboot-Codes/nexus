@@ -35,19 +35,14 @@ use std::net::{
 use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::{
-  self,
-  UnboundedReceiver,
-  UnboundedSender,
-};
+use tokio::sync::{broadcast, Mutex};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use warp::{
   Filter,
   http::StatusCode,
 };
-use super::models::UserConfig;
 
 // example error response
 #[derive(Serialize, Debug)]
@@ -268,20 +263,21 @@ pub async fn nexus_listener(
   port: u16,
   store: Arc<NexusStore>,
   internal_client_senders: Vec<(
-    &UserConfig,
-    UnboundedSender<IPCMessageWithId>,
+    &UserWithId,
+    usize,
+    broadcast::Sender<IPCMessageWithId>,
   )>,
-  internal_client_recivers: Vec<UnboundedReceiver<IPCWithKey>>,
+  internal_client_recivers: Vec<broadcast::Receiver<IPCWithKey>>,
   cancellation_tokens: (CancellationToken, CancellationToken),
 ) {
   info!("Starting nexus on port: {}...", port);
-  let clients_tx: Arc<Mutex<HashMap<String, UnboundedSender<IPCMessageWithId>>>> =
+  let clients_tx: Arc<Mutex<HashMap<String, broadcast::Sender<IPCMessageWithId>>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
   // For everything connected via thread IPC, we still need a client or else everything freaks out.
   for client in internal_client_senders {
     let client_obj = Client {
-      api_key: client.0.api_keys[0].key.clone(),
+      api_key: client.0.api_keys[client.1].clone(),
       user_id: client.0.id.clone(),
       active: true,
     };
@@ -298,7 +294,7 @@ pub async fn nexus_listener(
       .lock()
       .await
       .insert(cid.clone(), client_obj.clone());
-    clients_tx.lock().await.insert(cid.clone(), client.1);
+    clients_tx.lock().await.insert(cid.clone(), client.2);
   }
 
   let (from_client_tx, mut from_client_rx) = mpsc::unbounded_channel::<IPCMessageWithId>();
@@ -482,7 +478,7 @@ pub async fn nexus_listener(
           debug!("Internal IPC Handle Exited!");
         },
         _ = async move {
-          while let Some(msg) = client.recv().await {
+          while let Ok(msg) = client.recv().await {
             match internal_ipc_store.api_keys.lock().await.get(&msg.api_key.to_string()) {
               Some(api_key) => {
                 match internal_ipc_store.users.lock().await.get(&api_key.user_id) {

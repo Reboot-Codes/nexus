@@ -1,4 +1,4 @@
-use crate::server::models::Session;
+use crate::server::models::{Session, UserConfigWithId};
 use serde::{
   Deserialize,
   Serialize,
@@ -119,6 +119,25 @@ impl Into<ApiKeyWithKeyWithoutUID> for ApiKeyWithKey {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ApiKeyWithKeyWithoutUID {
   pub key: String,
+  pub allowed_events_to: Vec<String>,
+  pub allowed_events_from: Vec<String>,
+  pub echo: bool,
+  pub proxy: bool
+}
+
+impl Into<ApiKeyWithoutUID> for ApiKey {
+  fn into(self) -> ApiKeyWithoutUID {
+    ApiKeyWithoutUID {
+      allowed_events_to: self.allowed_events_to,
+      allowed_events_from: self.allowed_events_from,
+      echo: self.echo,
+      proxy: self.proxy
+    }
+  }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApiKeyWithoutUID {
   pub allowed_events_to: Vec<String>,
   pub allowed_events_from: Vec<String>,
   pub echo: bool,

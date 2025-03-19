@@ -12,9 +12,9 @@ use crate::{arbiter::models::ApiKeyWithKey, client::ClientStatus, server::{model
 /// This struct basically just ensures that messages are formatted properly.
 #[derive(Debug, Clone)]
 pub struct NexusUser {
-  is_child: bool,
+  pub is_child: bool,
   connected: Arc<Mutex<ClientStatus>>,
-  cancellation_token: CancellationToken,
+  pub cancellation_token: CancellationToken,
   api_key: ApiKeyWithKey,
   to_client: broadcast::Sender<WsIn>,
   from_server_tx: broadcast::Sender<IPCMessageWithId>
@@ -39,7 +39,7 @@ impl NexusUser {
     }
   }
 
-  pub fn send_msg(&self, kind: &String, message: &String) -> Result<(), anyhow::Error> {
+  pub fn send(&self, kind: &String, message: &String) -> Result<(), anyhow::Error> {
     match self.to_client.send(WsIn {
       kind: kind.clone(),
       message: message.clone(),

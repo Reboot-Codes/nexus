@@ -1,23 +1,23 @@
 use crate::{
   arbiter::models::{
-    ApiKey,
-    ApiKeyWithKeyWithoutUID,
-    User, UserWithId,
-  },
-  utils::{
+    ApiKey, ApiKeyWithKeyWithoutUID, ApiKeyWithoutUID, User, UserWithId
+  }, client::ClientStatus, user::NexusUser, utils::{
     gen_api_key_with_check,
     gen_uid_with_check,
-  },
+  }
 };
 use serde::{
   Deserialize,
   Serialize,
 };
+use tokio_util::sync::CancellationToken;
 use std::{
   collections::HashMap,
   sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
+
+use super::websockets::WsIn;
 
 // TODO: Define defaults via `Default` trait impl.
 
@@ -97,7 +97,7 @@ pub struct UserConfigWithId {
 pub struct UserConfig {
   pub user_type: String,
   pub pretty_name: String,
-  pub api_keys: Vec<ApiKeyWithKeyWithoutUID>,
+  pub api_keys: Vec<ApiKeyWithoutUID>,
 }
 
 // TODO: Add serialization/deserialization functions...
@@ -148,9 +148,13 @@ impl NexusStore {
     match error {
       Some(e) => { Err(e) },
       None => {
-        let mut key_ids: Vec<String> = vec![];
+        let mut key_ids = vec![];
+        let mut key_configs = vec![];
         for key_config in user_config.api_keys.iter() {
-          key_ids.push(key_config.key.clone());
+          let key = gen_api_key_with_check(self).await;
+
+          key_ids.push(key.clone());
+          key_configs.push((key.clone(), key_config.clone()));
         }
         let id = gen_uid_with_check(self).await;
 
@@ -166,9 +170,9 @@ impl NexusStore {
           },
         );
 
-        for key_config in user_config.api_keys.iter() {
+        for (key, key_config) in key_configs {
           self.api_keys.lock().await.insert(
-            key_config.key.clone(),
+            key.clone(),
             ApiKey {
               allowed_events_to: key_config.allowed_events_to.clone(),
               allowed_events_from: key_config.allowed_events_from.clone(),
@@ -196,15 +200,43 @@ impl NexusStore {
     let ret = UserConfig {
       pretty_name: pretty_name.clone(),
       user_type: NexusStore::MASTER_USER_TYPE.to_string(),
-      api_keys: vec![ApiKeyWithKeyWithoutUID {
+      api_keys: vec![ApiKeyWithoutUID {
         allowed_events_to: vec![".*".to_string()],
         allowed_events_from: vec![".*".to_string()],
-        key: gen_api_key_with_check(self).await,
         echo: true,
         proxy: true
       }],
     };
 
     self.add_user(ret.clone(), None).await.unwrap()
+  }
+
+  pub async fn connect_user(&mut self, api_key_str: &String) -> Result<(NexusUser, broadcast::Sender<WsIn>, broadcast::Sender<IPCMessageWithId>), anyhow::Error> {
+    match self.api_keys.lock().await.get(&api_key_str.clone()) {
+      Some(api_key) => {
+        let status = Arc::new(Mutex::new(ClientStatus::new(true)));
+        let cancellation_token = CancellationToken::new();
+        let (to_server, _) = broadcast::channel(usize::MAX / 2);
+        let (from_server_tx, _) = broadcast::channel(usize::MAX / 2);
+
+        let user_to_server = to_server.clone();
+        let user_from_server_tx = from_server_tx.clone();
+        Ok((
+          NexusUser::new(
+            false,
+            status,
+            cancellation_token,
+            api_key.to_api_key_with_key(&api_key_str.clone()),
+            user_to_server,
+            user_from_server_tx
+          ),
+          to_server,
+          from_server_tx
+        ))
+      },
+      None => {
+        Err(anyhow::anyhow!("Client's API key does not exist in the store... sure ya have the right one?"))
+      }
+    }
   }
 }

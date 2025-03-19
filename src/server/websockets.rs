@@ -29,7 +29,7 @@ use serde::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tokio::sync::mpsc::{
   self,
   UnboundedSender,
@@ -52,7 +52,7 @@ pub async fn handle_ws_client(
   auth: (UserWithId, ApiKeyWithKey, ClientWithId, Session),
   ws: warp::ws::Ws,
   store: Arc<Arc<NexusStore>>,
-  to_clients_tx: Arc<Arc<Mutex<HashMap<String, UnboundedSender<IPCMessageWithId>>>>>,
+  to_clients_tx: Arc<Arc<Mutex<HashMap<String, broadcast::Sender<IPCMessageWithId>>>>>,
   from_clients_tx: Arc<UnboundedSender<IPCMessageWithId>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let user = auth.0.clone();
