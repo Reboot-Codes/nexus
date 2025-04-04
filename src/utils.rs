@@ -1,8 +1,4 @@
-use crate::server::models::{
-  CoreUserConfig,
-  IPCMessageWithId,
-  NexusStore,
-};
+use crate::server::models::NexusStore;
 use api_key::types::{
   ApiKeyResults,
   Default,
@@ -14,15 +10,11 @@ use chrono::prelude::{
 };
 use os_path::OsPath;
 use simple_error::SimpleError;
-use std::{
-  hash::{
-    DefaultHasher,
-    Hash,
-    Hasher,
-  },
-  sync::Arc,
+use std::hash::{
+  DefaultHasher,
+  Hash,
+  Hasher,
 };
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::{
   fs,
   io::AsyncReadExt,

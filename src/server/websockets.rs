@@ -2,6 +2,7 @@ use crate::arbiter::models::{
   ApiKeyWithKey,
   UserWithId,
 };
+use crate::server::DEAUTH_EVENT;
 use crate::server::models::{
   Client,
   ClientWithId,
@@ -9,7 +10,6 @@ use crate::server::models::{
   NexusStore,
   Session,
 };
-use crate::server::DEAUTH_EVENT;
 use crate::utils::iso8601;
 use futures::{
   SinkExt,
@@ -29,10 +29,10 @@ use serde::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::{broadcast, Mutex};
-use tokio::sync::mpsc::{
-  self,
-  UnboundedSender,
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{
+  Mutex,
+  broadcast,
 };
 use url::Url;
 use uuid::Uuid;
@@ -45,7 +45,7 @@ use warp::filters::ws::{
 pub struct WsIn {
   pub kind: String,
   pub message: String,
-  pub api_key: Option<String>
+  pub api_key: Option<String>,
 }
 
 pub async fn handle_ws_client(
@@ -70,7 +70,7 @@ pub async fn handle_ws_client(
     info!("Upgraded client: {}, to websocket connection!", ws_client.id.clone());
 
     let (mut sender, mut receiver) = websocket.split();
-    let (to_client_tx, mut to_client_rx) = mpsc::unbounded_channel::<IPCMessageWithId>();
+    let (to_client_tx, mut to_client_rx) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
     let mut deauthed = false;
 
     to_clients_tx.lock().await.insert(ws_client.id.clone(), to_client_tx);
@@ -210,7 +210,7 @@ pub async fn handle_ws_client(
     let send_api_key = Arc::new(api_key.clone());
     let send_client = Arc::new(client.clone());
     let send_handle = tokio::task::spawn(async move {
-      while let Some(msg) = to_client_rx.recv().await {
+      while let Ok(msg) = to_client_rx.recv().await {
         if msg.kind == Url::parse(DEAUTH_EVENT)
         .unwrap()
         .query_pairs_mut()

@@ -1,4 +1,4 @@
-use crate::server::models::{Session, UserConfigWithId};
+use crate::server::models::Session;
 use serde::{
   Deserialize,
   Serialize,
@@ -31,7 +31,7 @@ impl User {
       user_type: self.user_type,
       pretty_name: self.pretty_name,
       parent_id: self.parent_id,
-      children: self.children
+      children: self.children,
     }
   }
 }
@@ -55,7 +55,7 @@ impl Into<User> for UserWithId {
       user_type: self.user_type,
       pretty_name: self.pretty_name,
       parent_id: self.parent_id,
-      children: self.children
+      children: self.children,
     }
   }
 }
@@ -66,7 +66,7 @@ pub struct ApiKey {
   pub allowed_events_from: Vec<String>,
   pub user_id: String,
   pub echo: bool,
-  pub proxy: bool
+  pub proxy: bool,
 }
 
 impl ApiKey {
@@ -77,7 +77,7 @@ impl ApiKey {
       allowed_events_from: self.allowed_events_from.clone(),
       user_id: self.user_id.clone(),
       echo: self.echo,
-      proxy: self.proxy
+      proxy: self.proxy,
     }
   }
 }
@@ -89,7 +89,7 @@ pub struct ApiKeyWithKey {
   pub allowed_events_from: Vec<String>,
   pub user_id: String,
   pub echo: bool,
-  pub proxy: bool
+  pub proxy: bool,
 }
 
 impl Into<ApiKey> for ApiKeyWithKey {
@@ -99,7 +99,7 @@ impl Into<ApiKey> for ApiKeyWithKey {
       allowed_events_from: self.allowed_events_from,
       user_id: self.user_id,
       echo: self.echo,
-      proxy: self.proxy
+      proxy: self.proxy,
     }
   }
 }
@@ -111,7 +111,7 @@ impl Into<ApiKeyWithKeyWithoutUID> for ApiKeyWithKey {
       allowed_events_to: self.allowed_events_to,
       allowed_events_from: self.allowed_events_from,
       echo: self.echo,
-      proxy: self.proxy
+      proxy: self.proxy,
     }
   }
 }
@@ -122,7 +122,7 @@ pub struct ApiKeyWithKeyWithoutUID {
   pub allowed_events_to: Vec<String>,
   pub allowed_events_from: Vec<String>,
   pub echo: bool,
-  pub proxy: bool
+  pub proxy: bool,
 }
 
 impl Into<ApiKeyWithoutUID> for ApiKey {
@@ -131,7 +131,7 @@ impl Into<ApiKeyWithoutUID> for ApiKey {
       allowed_events_to: self.allowed_events_to,
       allowed_events_from: self.allowed_events_from,
       echo: self.echo,
-      proxy: self.proxy
+      proxy: self.proxy,
     }
   }
 }
@@ -141,5 +141,5 @@ pub struct ApiKeyWithoutUID {
   pub allowed_events_to: Vec<String>,
   pub allowed_events_from: Vec<String>,
   pub echo: bool,
-  pub proxy: bool
+  pub proxy: bool,
 }

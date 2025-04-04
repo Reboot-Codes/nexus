@@ -10,9 +10,14 @@ use crate::server::models::{
   Session,
 };
 use crate::server::websockets::handle_ws_client;
-use crate::server::{AUTH_HEADER, DEAUTH_EVENT};
+use crate::server::{
+  AUTH_HEADER,
+  DEAUTH_EVENT,
+};
 use crate::utils::{
-  gen_cid_with_check, gen_message_id_with_check, iso8601
+  gen_cid_with_check,
+  gen_message_id_with_check,
+  iso8601,
 };
 use log::{
   debug,
@@ -35,14 +40,19 @@ use std::net::{
 use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
-use tokio::sync::{broadcast, Mutex};
 use tokio::sync::mpsc;
+use tokio::sync::{
+  Mutex,
+  broadcast,
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use warp::{
   Filter,
   http::StatusCode,
 };
+
+use super::websockets::WsIn;
 
 // example error response
 #[derive(Serialize, Debug)]
@@ -54,7 +64,7 @@ struct ApiErrorResult {
 pub struct IPCWithKey {
   kind: String,
   message: String,
-  api_key: String
+  api_key: String,
 }
 
 // errors thrown by handlers and custom filters,
@@ -262,12 +272,8 @@ pub struct ServerHealth {
 pub async fn nexus_listener(
   port: u16,
   store: Arc<NexusStore>,
-  internal_client_senders: Vec<(
-    &UserWithId,
-    usize,
-    broadcast::Sender<IPCMessageWithId>,
-  )>,
-  internal_client_recivers: Vec<broadcast::Receiver<IPCWithKey>>,
+  internal_client_senders: Vec<(Arc<UserWithId>, usize, broadcast::Sender<IPCMessageWithId>)>,
+  internal_client_recivers: Vec<(Arc<UserWithId>, usize, broadcast::Sender<WsIn>)>,
   cancellation_tokens: (CancellationToken, CancellationToken),
 ) {
   info!("Starting nexus on port: {}...", port);
@@ -467,7 +473,7 @@ pub async fn nexus_listener(
 
   let mut internal_ipc_handles = vec![];
 
-  for mut client in internal_client_recivers {
+  for client in internal_client_recivers {
     // Internal IPC Handles
     let internal_ipc_store = Arc::new(store.clone());
     let internal_ipc_tx = Arc::new(from_client_tx.clone());
@@ -478,8 +484,18 @@ pub async fn nexus_listener(
           debug!("Internal IPC Handle Exited!");
         },
         _ = async move {
-          while let Ok(msg) = client.recv().await {
-            match internal_ipc_store.api_keys.lock().await.get(&msg.api_key.to_string()) {
+          let mut client_rx = client.2.subscribe();
+          while let Ok(msg) = client_rx.recv().await {
+            let msg_api_key = match msg.api_key {
+              Some(api_key) => {
+                &api_key.clone()
+              },
+              None => {
+                client.0.api_keys.get(client.1).unwrap()
+              }
+            };
+
+            match internal_ipc_store.api_keys.lock().await.get(msg_api_key) {
               Some(api_key) => {
                 match internal_ipc_store.users.lock().await.get(&api_key.user_id) {
                   Some(_user) => {
