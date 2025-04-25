@@ -2,13 +2,16 @@ use crate::arbiter::models::{
   ApiKeyWithKey,
   UserWithId,
 };
-use crate::server::DEAUTH_EVENT;
 use crate::server::models::{
   Client,
   ClientWithId,
   IPCMessageWithId,
   NexusStore,
   Session,
+};
+use crate::server::{
+  DEAUTH_EVENT,
+  MAX_SIZE,
 };
 use crate::utils::iso8601;
 use futures::{
@@ -70,7 +73,7 @@ pub async fn handle_ws_client(
     info!("Upgraded client: {}, to websocket connection!", ws_client.id.clone());
 
     let (mut sender, mut receiver) = websocket.split();
-    let (to_client_tx, mut to_client_rx) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
+    let (to_client_tx, mut to_client_rx) = broadcast::channel::<IPCMessageWithId>(MAX_SIZE);
     let mut deauthed = false;
 
     to_clients_tx.lock().await.insert(ws_client.id.clone(), to_client_tx);

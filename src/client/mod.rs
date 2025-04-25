@@ -1,4 +1,13 @@
-use crate::{arbiter::models::ApiKey, server::{models::IPCMessageWithId, websockets::WsIn, AUTH_HEADER}, user::NexusUser};
+use crate::{
+  arbiter::models::ApiKey,
+  server::{
+    AUTH_HEADER,
+    MAX_SIZE,
+    models::IPCMessageWithId,
+    websockets::WsIn,
+  },
+  user::NexusUser,
+};
 use fastwebsockets::{
   FragmentCollector,
   Frame,
@@ -14,12 +23,16 @@ use hyper::{
     UPGRADE,
   },
 };
+use log::error;
 use log::info;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use std::collections::HashMap;
-use tokio::{net::TcpStream, sync::broadcast};
+use tokio::{
+  net::TcpStream,
+  sync::broadcast,
+};
 use tokio::{
   sync::Mutex,
   task::{
@@ -28,18 +41,15 @@ use tokio::{
   },
 };
 use tokio_util::sync::CancellationToken;
-use log::error;
 
 #[derive(Debug, Clone)]
 pub struct ClientStatus {
-  pub connected: bool
+  pub connected: bool,
 }
 
 impl ClientStatus {
   pub fn new(connected: bool) -> Self {
-    ClientStatus {
-      connected
-    }
+    ClientStatus { connected }
   }
 
   pub fn set(&mut self, connected: bool) {
@@ -65,8 +75,7 @@ pub struct NexusClient {
   from_server: broadcast::Sender<IPCMessageWithId>,
   handles: Vec<JoinHandle<()>>,
   api_keys: Arc<Mutex<HashMap<String, ApiKey>>>,
-  cancellation_token: CancellationToken
-  // TODO: Add user registry to see if a user is connected via this client to route back instead of sending to server.
+  cancellation_token: CancellationToken, // TODO: Add user registry to see if a user is connected via this client to route back instead of sending to server.
 }
 
 struct AddSend<T>(T);
@@ -87,15 +96,9 @@ where
 }
 
 impl NexusClient {
-  pub fn new(
-    secure: bool,
-    url: &String,
-    port: &u16,
-    api_key: &String,
-    keep_trying: bool,
-  ) -> Self {
-    let (from_server, _) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
-    let (to_server_tx, _) = broadcast::channel::<WsIn>(usize::MAX / 2);
+  pub fn new(secure: bool, url: &String, port: &u16, api_key: &String, keep_trying: bool) -> Self {
+    let (from_server, _) = broadcast::channel::<IPCMessageWithId>(MAX_SIZE);
+    let (to_server_tx, _) = broadcast::channel::<WsIn>(MAX_SIZE);
 
     NexusClient {
       secure,
@@ -108,27 +111,18 @@ impl NexusClient {
       from_server,
       handles: Vec::new(),
       api_keys: Arc::new(Mutex::new(HashMap::new())),
-      cancellation_token: CancellationToken::new()
+      cancellation_token: CancellationToken::new(),
     }
   }
 
   // TODO: Send as connected API key. (ensure routing is supported)
   // TODO: Send as proxied API key. (ensure routing is supported)
 
-  pub async fn connect_to_ws(
-    &mut self,
-  ) -> Result<
-    JoinHandle<()>,
-    anyhow::Error,
-  > {
+  pub async fn connect_to_ws(&mut self) -> Result<JoinHandle<()>, anyhow::Error> {
     let mut keep_trying = true;
     let mut ws_opt = None;
     let mut error: Option<anyhow::Error> = None;
-    let host = format!(
-      "{}:{}",
-      self.url.clone(),
-      self.port.clone().to_string()
-    );
+    let host = format!("{}:{}", self.url.clone(), self.port.clone().to_string());
     let uri = format!(
       "{}://{}:{}/ws",
       (if self.secure { "https" } else { "http" }),
@@ -142,10 +136,7 @@ impl NexusClient {
           match Request::builder()
             .method("GET")
             .uri(uri.clone())
-            .header(
-              "Host",
-              host.clone(),
-            )
+            .header("Host", host.clone())
             .header(UPGRADE, "websocket")
             .header(CONNECTION, "upgrade")
             .header(
@@ -161,7 +152,11 @@ impl NexusClient {
                 ws_opt = Some(the_socket);
               }
               Err(e) => {
-                error!("Failed to perform WebSocket Handshake with \"{}\":\n{}", uri.clone(), e);
+                error!(
+                  "Failed to perform WebSocket Handshake with \"{}\":\n{}",
+                  uri.clone(),
+                  e
+                );
                 if self.keep_trying {
                   error!("Retrying WebSocket Handshake with \"{}\"...", uri.clone());
                   tokio::time::sleep(Duration::from_secs(1)).await;
@@ -172,9 +167,16 @@ impl NexusClient {
               }
             },
             Err(e) => {
-              error!("Failed to send WebSocket Upgrade request to \"{}\":\n{}", uri.clone(), e);
+              error!(
+                "Failed to send WebSocket Upgrade request to \"{}\":\n{}",
+                uri.clone(),
+                e
+              );
               if self.keep_trying {
-                info!("Retrying WebSocket Upgrade request for \"{}\"...", uri.clone());
+                info!(
+                  "Retrying WebSocket Upgrade request for \"{}\"...",
+                  uri.clone()
+                );
                 tokio::time::sleep(Duration::from_secs(1)).await;
               } else {
                 error = Some(e.into());
@@ -184,7 +186,11 @@ impl NexusClient {
           }
         }
         Err(e) => {
-          error!("Failed to open TCP connection to \"{}\":\n{}", host.clone(), e);
+          error!(
+            "Failed to open TCP connection to \"{}\":\n{}",
+            host.clone(),
+            e
+          );
           if self.keep_trying {
             info!("Retrying TCP connection to \"{}\"...", host.clone());
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -202,7 +208,7 @@ impl NexusClient {
 
         let (mut reader, og_writer) = ws.split(tokio::io::split);
         let writer = Arc::new(Mutex::new(AddSend(og_writer)));
-        let (from_tx, _) = broadcast::channel::<IPCMessageWithId>(usize::MAX / 2);
+        let (from_tx, _) = broadcast::channel::<IPCMessageWithId>(MAX_SIZE);
 
         let senders_writer = writer.clone();
         let mut sender = move |frame| {
@@ -322,12 +328,12 @@ impl NexusClient {
             cancellation_token,
             api_key.to_api_key_with_key(&api_key_str.clone()),
             to_server,
-            from_server_tx
+            from_server_tx,
           ))
-        },
-        None => {
-          Err(anyhow::anyhow!("Client's API key does not exist in the mini-store... sure ya have the right one?"))
         }
+        None => Err(anyhow::anyhow!(
+          "Client's API key does not exist in the mini-store... sure ya have the right one?"
+        )),
       }
     } else {
       Err(anyhow::anyhow!("Client is not connected yet!"))

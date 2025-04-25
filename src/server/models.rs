@@ -1,23 +1,37 @@
 use crate::{
   arbiter::models::{
-    ApiKey, ApiKeyWithKeyWithoutUID, ApiKeyWithoutUID, User, UserWithId
-  }, client::ClientStatus, user::NexusUser, utils::{
+    ApiKey,
+    ApiKeyWithKeyWithoutUID,
+    ApiKeyWithoutUID,
+    User,
+    UserWithId,
+  },
+  client::ClientStatus,
+  user::NexusUser,
+  utils::{
     gen_api_key_with_check,
     gen_uid_with_check,
-  }
+  },
 };
+use log::info;
 use serde::{
   Deserialize,
   Serialize,
 };
-use tokio_util::sync::CancellationToken;
 use std::{
   collections::HashMap,
   sync::Arc,
 };
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{
+  Mutex,
+  broadcast,
+};
+use tokio_util::sync::CancellationToken;
 
-use super::websockets::WsIn;
+use super::{
+  MAX_SIZE,
+  websockets::WsIn,
+};
 
 // TODO: Define defaults via `Default` trait impl.
 
@@ -127,26 +141,28 @@ impl NexusStore {
     (ret, master_user)
   }
 
-  pub async fn add_user(&mut self, user_config: UserConfig, parent: Option<String>) -> Result<UserWithId, anyhow::Error> {
+  pub async fn add_user(
+    &mut self,
+    user_config: UserConfig,
+    parent: Option<String>,
+  ) -> Result<UserWithId, anyhow::Error> {
     let mut parent_id = None;
     let mut error = None;
 
     match parent.clone() {
-      Some(target_parent_id) => {
-        match self.users.lock().await.get(&target_parent_id) {
-          Some(_parent) => {
-            parent_id = parent.clone();
-          },
-          None => {
-            error = Some(anyhow::anyhow!("Parent ID does not exist in store!"));
-          }
+      Some(target_parent_id) => match self.users.lock().await.get(&target_parent_id) {
+        Some(_parent) => {
+          parent_id = parent.clone();
+        }
+        None => {
+          error = Some(anyhow::anyhow!("Parent ID does not exist in store!"));
         }
       },
       None => {}
     }
 
     match error {
-      Some(e) => { Err(e) },
+      Some(e) => Err(e),
       None => {
         let mut key_ids = vec![];
         let mut key_configs = vec![];
@@ -166,7 +182,7 @@ impl NexusStore {
             api_keys: key_ids.clone(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             parent_id: parent.clone(),
-            children: Vec::new()
+            children: Vec::new(),
           },
         );
 
@@ -178,7 +194,7 @@ impl NexusStore {
               allowed_events_from: key_config.allowed_events_from.clone(),
               user_id: id.clone(),
               echo: key_config.echo,
-              proxy: key_config.proxy
+              proxy: key_config.proxy,
             },
           );
         }
@@ -190,7 +206,7 @@ impl NexusStore {
           sessions: Arc::new(Mutex::new(HashMap::new())),
           parent_id: parent,
           children: Vec::new(),
-          id: id.clone()
+          id: id.clone(),
         })
       }
     }
@@ -204,20 +220,30 @@ impl NexusStore {
         allowed_events_to: vec![".*".to_string()],
         allowed_events_from: vec![".*".to_string()],
         echo: true,
-        proxy: true
+        proxy: true,
       }],
     };
 
     self.add_user(ret.clone(), None).await.unwrap()
   }
 
-  pub async fn connect_user(&mut self, api_key_str: &String) -> Result<(NexusUser, broadcast::Sender<WsIn>, broadcast::Sender<IPCMessageWithId>), anyhow::Error> {
+  pub async fn connect_user(
+    &mut self,
+    api_key_str: &String,
+  ) -> Result<
+    (
+      NexusUser,
+      broadcast::Sender<WsIn>,
+      broadcast::Sender<IPCMessageWithId>,
+    ),
+    anyhow::Error,
+  > {
     match self.api_keys.lock().await.get(&api_key_str.clone()) {
       Some(api_key) => {
         let status = Arc::new(Mutex::new(ClientStatus::new(true)));
         let cancellation_token = CancellationToken::new();
-        let (to_server, _) = broadcast::channel(usize::MAX / 2);
-        let (from_server_tx, _) = broadcast::channel(usize::MAX / 2);
+        let (to_server, _) = broadcast::channel(MAX_SIZE);
+        let (from_server_tx, _) = broadcast::channel(MAX_SIZE);
 
         let user_to_server = to_server.clone();
         let user_from_server_tx = from_server_tx.clone();
@@ -228,15 +254,15 @@ impl NexusStore {
             cancellation_token,
             api_key.to_api_key_with_key(&api_key_str.clone()),
             user_to_server,
-            user_from_server_tx
+            user_from_server_tx,
           ),
           to_server,
-          from_server_tx
+          from_server_tx,
         ))
-      },
-      None => {
-        Err(anyhow::anyhow!("Client's API key does not exist in the store... sure ya have the right one?"))
       }
+      None => Err(anyhow::anyhow!(
+        "Client's API key does not exist in the store... sure ya have the right one?"
+      )),
     }
   }
 }
