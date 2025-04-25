@@ -128,7 +128,10 @@ impl NexusStore {
   const MASTER_USER_TYPE: &str = "com.reboot-codes.nexus.master";
 
   /// Create a new store with a set master user.
-  pub async fn new(master_user_pretty_name: &String) -> (NexusStore, UserWithId) {
+  pub async fn new(
+    master_user_pretty_name: &String,
+    master_user_primary_key: &String,
+  ) -> (NexusStore, UserWithId) {
     let mut ret = NexusStore {
       users: Arc::new(Mutex::new(HashMap::new())),
       api_keys: Arc::new(Mutex::new(HashMap::new())),
@@ -136,7 +139,9 @@ impl NexusStore {
       messages: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let master_user = ret.add_master_user(&master_user_pretty_name).await;
+    let master_user = ret
+      .add_master_user(&master_user_pretty_name, Some(master_user_primary_key))
+      .await;
 
     (ret, master_user)
   }
@@ -145,6 +150,7 @@ impl NexusStore {
     &mut self,
     user_config: UserConfig,
     parent: Option<String>,
+    primary_key: Option<&String>,
   ) -> Result<UserWithId, anyhow::Error> {
     let mut parent_id = None;
     let mut error = None;
@@ -166,8 +172,19 @@ impl NexusStore {
       None => {
         let mut key_ids = vec![];
         let mut key_configs = vec![];
+        let mut primary_configured = false;
         for key_config in user_config.api_keys.iter() {
-          let key = gen_api_key_with_check(self).await;
+          let key = match primary_key.clone() {
+            Some(preset_key) => {
+              if primary_configured {
+                gen_api_key_with_check(self).await
+              } else {
+                primary_configured = true;
+                preset_key.clone()
+              }
+            }
+            None => gen_api_key_with_check(self).await,
+          };
 
           key_ids.push(key.clone());
           key_configs.push((key.clone(), key_config.clone()));
@@ -212,7 +229,11 @@ impl NexusStore {
     }
   }
 
-  pub async fn add_master_user(&mut self, pretty_name: &String) -> UserWithId {
+  pub async fn add_master_user(
+    &mut self,
+    pretty_name: &String,
+    primary_key: Option<&String>,
+  ) -> UserWithId {
     let ret = UserConfig {
       pretty_name: pretty_name.clone(),
       user_type: NexusStore::MASTER_USER_TYPE.to_string(),
@@ -224,7 +245,7 @@ impl NexusStore {
       }],
     };
 
-    self.add_user(ret.clone(), None).await.unwrap()
+    self.add_user(ret.clone(), None, primary_key).await.unwrap()
   }
 
   pub async fn connect_user(
