@@ -444,7 +444,8 @@ pub async fn nexus_listener(
                             author: "ipc://com.reboot-codes.nexus.listener".to_string(),
                             kind,
                             message: "api key removed from store".to_string(),
-                            id: gen_message_id_with_check(&ipc_dispatch_store).await
+                            id: gen_message_id_with_check(&ipc_dispatch_store).await,
+                            replying_to: Some("".to_string())
                           };
 
                           ipc_dispatch_store.messages.lock().await.insert(generated_message.id.clone(), generated_message.clone().into());
@@ -508,7 +509,8 @@ pub async fn nexus_listener(
                                 author: author.clone(),
                                 kind: msg.kind.clone(),
                                 message: msg.message.clone(),
-                                id: gen_message_id_with_check(&internal_ipc_store).await
+                                id: gen_message_id_with_check(&internal_ipc_store).await,
+                                replying_to: msg.replying_to.clone()
                               }) {
                                 Ok(_) => {}
                                 Err(e) => {

@@ -40,6 +40,7 @@ pub struct IPCMessage {
   pub author: String,
   pub kind: String,
   pub message: String,
+  pub replying_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -48,6 +49,7 @@ pub struct IPCMessageWithId {
   pub kind: String,
   pub message: String,
   pub id: String,
+  pub replying_to: Option<String>,
 }
 
 impl Into<IPCMessage> for IPCMessageWithId {
@@ -56,6 +58,7 @@ impl Into<IPCMessage> for IPCMessageWithId {
       author: self.author,
       kind: self.kind,
       message: self.message,
+      replying_to: self.replying_to,
     }
   }
 }

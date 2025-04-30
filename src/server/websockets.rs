@@ -49,6 +49,7 @@ pub struct WsIn {
   pub kind: String,
   pub message: String,
   pub api_key: Option<String>,
+  pub replying_to: Option<String>,
 }
 
 pub async fn handle_ws_client(
@@ -175,7 +176,7 @@ pub async fn handle_ws_client(
                 }
 
                 if allowed_to_send {
-                  let generated_message = IPCMessageWithId { id: message_id.clone(), author: format!("ws://{}?client={}", recv_api_key.user_id.clone(), ws_client.id.clone()), kind: msg.kind.clone(), message: msg.message.clone() };
+                  let generated_message = IPCMessageWithId { id: message_id.clone(), author: format!("ws://{}?client={}", recv_api_key.user_id.clone(), ws_client.id.clone()), kind: msg.kind.clone(), message: msg.message.clone(), replying_to: msg.replying_to.clone() };
 
                   recv_store.messages.lock().await.insert(message_id.clone(), generated_message.clone().into());
 
@@ -246,6 +247,7 @@ pub async fn handle_ws_client(
               author: msg.author.clone(),
               kind: msg.kind.clone(),
               message: msg.message.clone(),
+              replying_to: msg.replying_to.clone()
             })
             .unwrap();
             match sender.send(Message::text(response)).await {
