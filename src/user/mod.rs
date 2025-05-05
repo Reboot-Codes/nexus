@@ -2,6 +2,7 @@ use crate::{
   arbiter::models::ApiKeyWithKey,
   client::ClientStatus,
   server::{
+    MAX_SIZE,
     models::IPCMessageWithId,
     websockets::WsIn,
   },
@@ -13,11 +14,6 @@ use tokio::{
   sync::{
     Mutex,
     broadcast,
-    mpsc::{
-      UnboundedReceiver,
-      UnboundedSender,
-      unbounded_channel,
-    },
   },
   task::JoinHandle,
 };
@@ -74,14 +70,19 @@ impl NexusUser {
     }
   }
 
-  pub fn subscribe(&self) -> (UnboundedReceiver<IPCMessageWithId>, JoinHandle<()>) {
-    let (tx, rx) = unbounded_channel::<IPCMessageWithId>();
+  pub fn subscribe(
+    &self,
+  ) -> (
+    tokio::sync::broadcast::Sender<IPCMessageWithId>,
+    JoinHandle<()>,
+  ) {
+    let (tx, _) = tokio::sync::broadcast::channel(MAX_SIZE);
     let mut from_client = self.from_server_tx.subscribe();
     let cancellation_token = self.cancellation_token.clone();
     let this = self.clone();
 
     (
-      rx,
+      tx.clone(),
       tokio::task::spawn(async move {
         cancellation_token
           .run_until_cancelled(async move {
@@ -90,7 +91,7 @@ impl NexusUser {
                 match Regex::new(&allowed_event_regex) {
                   Ok(regex) => {
                     if regex.is_match(&message.kind.clone()) {
-                      match tx.send(message.clone()) {
+                      match tx.clone().send(message.clone()) {
                         Ok(_) => {}
                         Err(e) => {
                           error!(

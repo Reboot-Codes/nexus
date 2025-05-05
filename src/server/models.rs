@@ -13,7 +13,6 @@ use crate::{
     gen_uid_with_check,
   },
 };
-use log::info;
 use serde::{
   Deserialize,
   Serialize,
