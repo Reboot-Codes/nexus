@@ -7,7 +7,7 @@ use crate::{
     websockets::WsIn,
   },
 };
-use log::error;
+use log::{debug, error};
 use regex::Regex;
 use std::sync::Arc;
 use tokio::{
@@ -91,6 +91,7 @@ impl NexusUser {
                 match Regex::new(&allowed_event_regex) {
                   Ok(regex) => {
                     if regex.is_match(&message.kind.clone()) {
+                      debug!("Sending event to user: {}...", this.api_key.user_id.clone(),);
                       match tx.clone().send(message.clone()) {
                         Ok(_) => {}
                         Err(e) => {

@@ -6,4 +6,5 @@ pub mod websockets;
 
 pub const DEAUTH_EVENT: &str = "nexus://com.reboot-codes.nexus/websockets/deauthorize";
 pub const AUTH_HEADER: &str = "Authorization";
-pub const MAX_SIZE: usize = 8388608;
+/// Max amount of messages for all broadcast channels.... please keep low.
+pub const MAX_SIZE: usize = 256;
