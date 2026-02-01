@@ -275,6 +275,7 @@ pub async fn nexus_listener(
   internal_client_senders: Vec<(Arc<UserWithId>, usize, broadcast::Sender<IPCMessageWithId>)>,
   internal_client_recivers: Vec<(Arc<UserWithId>, usize, broadcast::Sender<WsIn>)>,
   cancellation_tokens: (CancellationToken, CancellationToken),
+  ready_signal: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
   info!("Starting nexus on port: {}...", port);
   let clients_tx: Arc<Mutex<HashMap<String, broadcast::Sender<IPCMessageWithId>>>> =
@@ -301,6 +302,12 @@ pub async fn nexus_listener(
       .await
       .insert(cid.clone(), client_obj.clone());
     clients_tx.lock().await.insert(cid.clone(), client.2);
+  }
+
+  // Signal that nexus is ready AFTER internal clients are registered
+  if let Some(tx) = ready_signal {
+    let _ = tx.send(());
+    info!("Nexus ready - internal clients registered!");
   }
 
   let (from_client_tx, mut from_client_rx) = mpsc::unbounded_channel::<IPCMessageWithId>();
